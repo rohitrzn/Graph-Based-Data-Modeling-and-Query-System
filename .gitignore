@@ -1,0 +1,23 @@
+# --- Editor ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Backend (Python) ---
+backend/venv/
+backend/__pycache__/
+backend/*.py[cod]
+backend/*$py.class
+backend/.env
+backend/graph.db*
+
+# --- Frontend (Node/React) ---
+frontend-app/node_modules/
+frontend-app/dist/
+frontend-app/dist-ssr/
+frontend-app/*.local
+frontend-app/.env
+
+# --- Data ---
+# If you don't want to commit your raw JSONL files to Git, uncomment the line below:
+# data/*.jsonl
