@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { Send, Bot, User, Database, Loader2 } from 'lucide-react';
 
-const ChatPanel = ({ onNodeSelect }) => {
+const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
   const [messages, setMessages] = useState([
     { role: 'assistant', text: 'Hello! Ask me any questions about the data.' }
   ]);
@@ -23,24 +23,139 @@ const ChatPanel = ({ onNodeSelect }) => {
     setLoading(true);
     setInput('');
     
+    // Clear previous highlights
+    if (onHighlightNodes) onHighlightNodes(new Set());
+
+    const historyPayload = messages
+        .filter((msg, index) => index > 0 && !msg.isError)
+        .map(msg => ({ role: msg.role, content: msg.text }));
+
     try {
-      const res = await axios.post('http://127.0.0.1:8000/api/query', { query: input });
+      const response = await fetch('http://127.0.0.1:8000/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: input, history: historyPayload }),
+      });
       
-      const assistantMessage = {
+      if (!response.ok) throw new Error('Network error');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      
+      let currentMessage = {
         role: 'assistant',
-        text: res.data.response,
-        sql: res.data.sql,
-        metadata: res.data.data
+        text: '',
+        sql: '',
+        metadata: [],
+        type: 'streaming'
       };
       
-      setMessages(prev => [...prev, assistantMessage]);
+      setMessages(prev => [...prev, currentMessage]);
+      setLoading(false); // Stop standard spinner since streaming started
+
+      let textIds = new Set();
+      let sqlIds = new Set();
+      
+      const extractIds = (text, dataArray, targetSet) => {
+          if (text) {
+              const words = text.split(/\s+/);
+              words.forEach(word => {
+                  const clean = word.replace(/[^a-zA-Z0-9-]/g, '');
+                  if (clean.length > 0) {
+                     targetSet.add(`customer_${clean}`);
+                     targetSet.add(`company_${clean}`);
+                     targetSet.add(`billing_${clean}`);
+                     targetSet.add(`accounting_${clean}`);
+                  }
+              });
+          }
+          if (dataArray) {
+              dataArray.forEach(row => {
+                  if (row.id) {
+                      targetSet.add(`customer_${row.id}`);
+                      targetSet.add(`company_${row.id}`);
+                      targetSet.add(`billing_${row.id}`);
+                      targetSet.add(`accounting_${row.id}`);
+                  }
+                  if (row.customer_id) targetSet.add(`customer_${row.customer_id}`);
+                  if (row.company_id) targetSet.add(`company_${row.company_id}`);
+                  if (row.accounting_document_id) targetSet.add(`accounting_${row.accounting_document_id}`);
+              });
+          }
+      };
+
+      const updateHighlights = () => {
+         if (!onHighlightNodes) return;
+         const validTextIds = new Set();
+         textIds.forEach(id => {
+            if (sqlIds.has(id)) validTextIds.add(id);
+         });
+
+         if (validTextIds.size > 0) {
+             onHighlightNodes(validTextIds);
+         } else if (sqlIds.size > 0) {
+             onHighlightNodes(sqlIds);
+         } else {
+             onHighlightNodes(textIds);
+         }
+      };
+
+      // Initial user text IDs
+      extractIds(userMessage.text, null, textIds);
+      updateHighlights();
+
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; 
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.substring(6);
+            if (!dataStr.trim()) continue;
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === 'metadata') {
+                currentMessage.sql = data.sql;
+                currentMessage.metadata = data.data;
+                extractIds(null, data.data, sqlIds);
+              } else if (data.type === 'text') {
+                currentMessage.text += data.content;
+                extractIds(data.content, null, textIds);
+              } else if (data.type === 'error') {
+                currentMessage.text += data.response;
+              } else if (data.error) {
+                currentMessage.text += data.error;
+              }
+              
+              setMessages(prev => {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1] = {
+                  ...newMessages[newMessages.length - 1],
+                  sql: currentMessage.sql,
+                  metadata: currentMessage.metadata,
+                  text: currentMessage.text
+                };
+                return newMessages;
+              });
+              
+              updateHighlights();
+            } catch (e) {
+              // Ignore invalid JSON chunks
+            }
+          }
+        }
+      }
     } catch (error) {
       setMessages(prev => [...prev, {
         role: 'assistant',
-        text: 'Sorry, I encountered an error. Ensure the backend is running and the API key is valid.',
+        text: 'Sorry, I encountered an error receiving the stream. Ensure the backend is running.',
         isError: true
       }]);
-    } finally {
       setLoading(false);
     }
   };

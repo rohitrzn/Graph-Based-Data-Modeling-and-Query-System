@@ -7,6 +7,7 @@ import { Network } from 'lucide-react';
 function App() {
   const [graphData, setGraphData] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [highlightedNodes, setHighlightedNodes] = useState(new Set());
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -47,6 +48,7 @@ function App() {
               <GraphView 
                 graphData={graphData} 
                 onNodeClick={(node) => setSelectedNode(node)} 
+                highlightedNodes={highlightedNodes}
               />
               
               {/* Selected Node Overlay */}
@@ -61,10 +63,18 @@ function App() {
                       ×
                     </button>
                   </div>
-                  <div className="text-sm text-slate-600 space-y-1">
+                  <div className="text-sm text-slate-600 space-y-1 max-h-64 overflow-y-auto pr-2 mt-2">
                     <p><span className="font-medium">Type:</span> {selectedNode.type}</p>
                     <p><span className="font-medium">ID:</span> {selectedNode.id}</p>
-                    {selectedNode.amount && <p><span className="font-medium">Amount:</span> {selectedNode.amount} {selectedNode.currency}</p>}
+                    <div className="border-t border-slate-100 my-2"></div>
+                    {Object.entries(selectedNode)
+                      .filter(([key, val]) => !['x', 'y', 'vx', 'vy', 'index', 'color', 'label', 'id', 'type', 'indexColor', '__indexColor'].includes(key) && val !== null && val !== undefined)
+                      .map(([key, value]) => (
+                        <p key={key}>
+                          <span className="font-medium capitalize text-slate-500">{key.replace(/_/g, ' ')}:</span>{' '}
+                          {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                        </p>
+                      ))}
                   </div>
                 </div>
               )}
@@ -72,7 +82,7 @@ function App() {
 
             {/* Chat Interface (Right) */}
             <div className="w-[450px] shrink-0 h-full flex flex-col drop-shadow-sm transition-all focus-within:ring-2 ring-blue-500 rounded-lg">
-              <ChatPanel onNodeSelect={setSelectedNode} />
+              <ChatPanel onNodeSelect={setSelectedNode} onHighlightNodes={setHighlightedNodes} />
             </div>
           </>
         )}
