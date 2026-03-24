@@ -15,17 +15,7 @@ const GraphView = ({ graphData, onNodeClick, highlightedNodes }) => {
     return <div className="flex items-center justify-center h-full text-slate-400">Loading graph data...</div>;
   }
 
-  // Generate colors based on node type
-  const getNodeColor = (node) => {
-    let baseColor = '#94a3b8'; // slate default
-    switch(node.type) {
-      case 'Customer': baseColor = '#3b82f6'; break; // blue
-      case 'Company': baseColor = '#8b5cf6'; break; // purple
-      case 'BillingDocument': baseColor = '#10b981'; break; // green
-      case 'AccountingDocument': baseColor = '#f59e0b'; break; // amber
-    }
-    return baseColor;
-  };
+  // Colors are natively assigned by the nodeAutoColorBy prop instead
 
   return (
     <div className="w-full h-full border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
@@ -33,14 +23,12 @@ const GraphView = ({ graphData, onNodeClick, highlightedNodes }) => {
         ref={fgRef}
         graphData={graphData}
         nodeLabel="label"
-        nodeColor={getNodeColor}
-        nodeVal={(node) => highlightedNodes && highlightedNodes.has(node.id) ? 12 : 3}
+        nodeAutoColorBy="type"
+        nodeVal={(node) => highlightedNodes && highlightedNodes.has(node.id) ? 12 : 2}
         onNodeClick={onNodeClick}
-        nodeRelSize={5}
-        linkDirectionalArrowLength={3.5}
-        linkDirectionalArrowRelPos={1}
-        linkCurvature={0.25}
-        width={window.innerWidth * 0.6} // roughly 60% width depending on layout
+        nodeRelSize={3}
+        linkWidth={0.2}
+        width={window.innerWidth * 0.6}
         nodeCanvasObjectMode={() => "after"}
         nodeCanvasObject={(node, ctx, globalScale) => {
           const isHighlighted = highlightedNodes && highlightedNodes.has(node.id);

@@ -4,11 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
-from database import get_db, Base, engine
+from database import get_db, engine
 import graph, llm_service
-
-# Ensure tables are created
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Context Graph API")
 

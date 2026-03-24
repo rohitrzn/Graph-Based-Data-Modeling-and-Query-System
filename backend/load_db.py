@@ -1,20 +1,22 @@
 import os
 import glob
 import pandas as pd
-from sqlalchemy import create_engine
+import sqlite3
 
-DB_PATH = "sqlite:///../data/graph2.db"
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "sap-o2c-data")
+DB_PATH = "graph3.db"
 
 def ingest_data():
-    if not os.path.exists(DATA_DIR):
-        print(f"Data directory {DATA_DIR} does not exist!")
-        return
-        
-    engine = create_engine(DB_PATH)
-    folders = [f.path for f in os.scandir(DATA_DIR) if f.is_dir()]
+    print(f"Starting isolated Pandas pipeline towards {DB_PATH}")
     
+    # Use native C-bindings rather than SQLAlchemy to entirely bypass pool deadlocking
+    conn = sqlite3.connect(DB_PATH, timeout=60)
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    
+    folders = [f.path for f in os.scandir(DATA_DIR) if f.is_dir()]
     total_rows = 0
+    
     for folder in folders:
         table_name = os.path.basename(folder)
         jsonl_files = glob.glob(os.path.join(folder, "*.jsonl"))
@@ -22,34 +24,35 @@ def ingest_data():
         if not jsonl_files:
             continue
             
-        print(f"Loading {len(jsonl_files)} files into table '{table_name}'...")
         dfs = []
         for file in jsonl_files:
             try:
                 df = pd.read_json(file, lines=True)
                 dfs.append(df)
             except Exception as e:
-                print(f"Failed to read {file}: {e}")
+                pass
                 
         if dfs:
             combined_df = pd.concat(dfs, ignore_index=True)
-            
-            # Basic cleanup for common SAP date fields to ensure SQLite maps them correctly
             for col in combined_df.columns:
+                # Stringify any lists or dictionaries since SQLite exclusively accepts primitives
+                if combined_df[col].apply(lambda x: isinstance(x, (list, dict))).any():
+                    combined_df[col] = combined_df[col].astype(str)
+                    
                 if "Date" in col or "Time" in col:
                     try:
                         combined_df[col] = pd.to_datetime(combined_df[col], format='mixed', errors='ignore')
                     except:
                         pass
                         
-            # Push directly to SQLite table matching the exact folder name
-            combined_df.to_sql(table_name, engine, if_exists="replace", index=False)
+            print(f"Pushing '{table_name}'...")
+            combined_df.to_sql(table_name, conn, if_exists="replace", index=False, chunksize=1000)
             rows = len(combined_df)
             total_rows += rows
-            print(f" -> Automatically created table '{table_name}' with {rows} rows and {len(combined_df.columns)} columns.")
-    
-    print(f"\nSUCCESS: Universally ingested {total_rows} total rows across all databases.")
+            print(f" -> Automatically created table '{table_name}' with {rows} rows.")
+            
+    conn.close()
+    print(f"\nSUCCESS: Universally ingested {total_rows} total rows!")
 
 if __name__ == "__main__":
-    print("Executing universal Pandas SQLite ingestion...")
     ingest_data()
