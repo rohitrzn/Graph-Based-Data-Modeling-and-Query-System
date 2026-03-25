@@ -1,0 +1,15 @@
+﻿business_partners: 8 rows
+  cols: ['businessPartner', 'customer', 'businessPartnerCategory', 'businessPartnerFullName', 'businessPartnerGrouping', 'businessPartnerName', 'correspondenceLanguage', 'createdByUser', 'creationDate', 'creationTime', 'firstName', 'formOfAddress', 'industry', 'lastChangeDate', 'lastName', 'organizationBpName1', 'organizationBpName2', 'businessPartnerIsBlocked', 'isMarkedForArchiving']
+
+sales_order_headers: 100 rows
+  cols: ['salesOrder', 'salesOrderType', 'salesOrganization', 'distributionChannel', 'organizationDivision', 'salesGroup', 'salesOffice', 'soldToParty', 'creationDate', 'createdByUser', 'lastChangeDateTime', 'totalNetAmount', 'overallDeliveryStatus', 'overallOrdReltdBillgStatus', 'overallSdDocReferenceStatus', 'transactionCurrency', 'pricingDate', 'requestedDeliveryDate', 'headerBillingBlockReason', 'deliveryBlockReason', 'incotermsClassification', 'incotermsLocation1', 'customerPaymentTerms', 'totalCreditCheckStatus']
+
+outbound_delivery_headers: 86 rows
+  cols: ['actualGoodsMovementDate', 'actualGoodsMovementTime', 'creationDate', 'creationTime', 'deliveryBlockReason', 'deliveryDocument', 'hdrGeneralIncompletionStatus', 'headerBillingBlockReason', 'lastChangeDate', 'overallGoodsMovementStatus', 'overallPickingStatus', 'overallProofOfDeliveryStatus', 'shippingPoint']
+
+billing_document_headers: 163 rows
+  cols: ['billingDocument', 'billingDocumentType', 'creationDate', 'creationTime', 'lastChangeDateTime', 'billingDocumentDate', 'billingDocumentIsCancelled', 'cancelledBillingDocument', 'totalNetAmount', 'transactionCurrency', 'companyCode', 'fiscalYear', 'accountingDocument', 'soldToParty']
+
+payments_accounts_receivable: 120 rows
+  cols: ['companyCode', 'fiscalYear', 'accountingDocument', 'accountingDocumentItem', 'clearingDate', 'clearingAccountingDocument', 'clearingDocFiscalYear', 'amountInTransactionCurrency', 'transactionCurrency', 'amountInCompanyCodeCurrency', 'companyCodeCurrency', 'customer', 'invoiceReference', 'invoiceReferenceFiscalYear', 'salesDocument', 'salesDocumentItem', 'postingDate', 'documentDate', 'assignmentReference', 'glAccount', 'financialAccountType', 'profitCenter', 'costCenter']
+

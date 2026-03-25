@@ -15,16 +15,18 @@ api_key = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=api_key) if api_key else None
 
 SCHEMA_CONTEXT = """
-You are an AI assistant that translates natural language inquiries into SQL queries for an SQLite database containing business entities, and then formats the results into a human-readable response.
+You are an AI assistant that translates natural language inquiries into SQL queries for an SQLite database.
+The data visualized in the Graph UI focuses on the Order-to-Cash (O2C) flow: Business Partners -> Sales Orders -> Outbound Deliveries -> Billing Documents (Invoices) -> Journal Entries / Payments, plus Products. Address queries keeping this visual context in mind.
 
 Rules:
 1. Do not hallucinate data. Only use what is provided in the schema.
-2. If the user's prompt is completely unrelated to business, datasets, or the schema (e.g., "Write a poem", "What is the capital of France?"), you MUST respond EXACTLY with:
+2. If the user's prompt is completely unrelated to business, datasets, or the schema, respond EXACTLY with:
    "This system is designed to answer questions related to the provided dataset only."
 3. Your final response should ONLY output a single text string based on the current context.
-4. To prevent data overflow, always append LIMIT 5 to queries that return multiple general rows. EXCEPTIONS: If asked for "highest/lowest" items, use a strict subquery without limit. If asked for a count or "how many", use `SELECT COUNT(*)` and DO NOT apply any LIMIT.
-5. There is no universal 'id' column! You MUST look at the table schema to identify the primary key (e.g. `soldToParty`, `companyCode`) and always include it in your SELECT statements, EXCEPT when performing a pure `COUNT()` aggregation. If a user asks for a comparison or calculation between items, DO NOT return the math result (e.g., avoid `SELECT MAX(a) - MIN(a)`). Instead, construct your SQL to retrieve the actual records for BOTH items (e.g., `WHERE amount = (SELECT MAX(...) ...)`). You calculate the math difference yourself inside your final response.
-6. CRITICAL SYNTAX RULE: You MUST strictly generate ONLY ONE contiguous SQL statement. NEVER output multiple statements separated by semicolons. If asked to count or query completely unrelated tables simultaneously, YOU MUST WRAP EACH SUBQUERY IN PARENTHESES AND PUT A SINGLE 'SELECT' AT THE VERY BEGINNING!
+4. NO RANDOM LIMITS: Do NOT append arbitrary limit clauses (like LIMIT 5) unless the user specifically asks for "top 5" or "a few". Return all matching rows so the user gets the full visualized context.
+5. NO COMMA SEPARATED JOINS: Always use explicit JOIN syntax (e.g. `LEFT JOIN tableB ON tableA.id = tableB.id`) rather than implicit comma separation (`FROM tableA, tableB`).
+6. There is no universal 'id' column! You MUST look at the table schema to identify the primary key (e.g. `soldToParty`, `deliveryDocument`) and always include it in your SELECT statements. 
+7. CRITICAL SYNTAX RULE: You MUST strictly generate ONLY ONE contiguous SQL statement. NEVER output multiple statements separated by semicolons. If asked to count or query completely unrelated tables simultaneously, YOU MUST WRAP EACH SUBQUERY IN PARENTHESES AND PUT A SINGLE 'SELECT' AT THE VERY BEGINNING!
    - CORRECT: `SELECT (SELECT COUNT(*) FROM tableA) as count_A, (SELECT COUNT(*) FROM tableB) as count_B`
    - WRONG (WILL CRASH): `SELECT COUNT(*) FROM tableA, SELECT COUNT(*) FROM tableB`
 
@@ -63,7 +65,7 @@ def generate_sql(db: Session, question: str, history: list = None) -> str:
     })
     
     if history:
-        for msg in history:
+        for msg in history[-6:]:
             role = "user" if msg.get("role") == "user" else "assistant"
             messages.append({"role": role, "content": msg.get("content", "").strip()})
             
@@ -117,7 +119,7 @@ def generate_nl_response(question: str, sql: str, data: list, history: list = No
     })
     
     if history:
-        for msg in history:
+        for msg in history[-6:]:
             role = "user" if msg.get("role") == "user" else "assistant"
             messages.append({"role": role, "content": msg.get("content", "").strip()})
             

@@ -1,16 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
-import { Send, Bot, User, Database, Loader2 } from 'lucide-react';
+import { Send, Bot, User, Loader2 } from 'lucide-react';
 
-const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', text: 'Hello! Ask me any questions about the data.' }
-  ]);
+const ChatPanel = ({ nodeToChat, onHighlightNodes, theme = 'light' }) => {
+  const [messages, setMessages] = useState([{ role: 'assistant', text: 'Hello! Ask me any questions about the data.' }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  
   const endRef = useRef();
   
+  const isDark = theme === 'dark';
+
+  useEffect(() => {
+    if (nodeToChat) {
+      setInput(prev => prev ? `${prev} ${nodeToChat}` : nodeToChat);
+    }
+  }, [nodeToChat]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -23,7 +27,6 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
     setLoading(true);
     setInput('');
     
-    // Clear previous highlights
     if (onHighlightNodes) onHighlightNodes(new Set());
 
     const historyPayload = messages
@@ -42,19 +45,11 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       
-      let currentMessage = {
-        role: 'assistant',
-        text: '',
-        sql: '',
-        metadata: [],
-        type: 'streaming'
-      };
-      
+      let currentMessage = { role: 'assistant', text: '', sql: '', metadata: [], type: 'streaming' };
       setMessages(prev => [...prev, currentMessage]);
-      setLoading(false); // Stop standard spinner since streaming started
+      setLoading(false);
 
-      let textIds = new Set();
-      let sqlIds = new Set();
+      let textIds = new Set(), sqlIds = new Set();
       
       const extractIds = (text, dataArray, targetSet) => {
           if (text) {
@@ -87,20 +82,13 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
       const updateHighlights = () => {
          if (!onHighlightNodes) return;
          const validTextIds = new Set();
-         textIds.forEach(id => {
-            if (sqlIds.has(id)) validTextIds.add(id);
-         });
+         textIds.forEach(id => { if (sqlIds.has(id)) validTextIds.add(id); });
 
-         if (validTextIds.size > 0) {
-             onHighlightNodes(validTextIds);
-         } else if (sqlIds.size > 0) {
-             onHighlightNodes(sqlIds);
-         } else {
-             onHighlightNodes(textIds);
-         }
+         if (validTextIds.size > 0) onHighlightNodes(validTextIds);
+         else if (sqlIds.size > 0) onHighlightNodes(sqlIds);
+         else onHighlightNodes(textIds);
       };
 
-      // Initial user text IDs
       extractIds(userMessage.text, null, textIds);
       updateHighlights();
 
@@ -134,38 +122,26 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
               
               setMessages(prev => {
                 const newMessages = [...prev];
-                newMessages[newMessages.length - 1] = {
-                  ...newMessages[newMessages.length - 1],
-                  sql: currentMessage.sql,
-                  metadata: currentMessage.metadata,
-                  text: currentMessage.text
-                };
+                newMessages[newMessages.length - 1] = { ...newMessages[newMessages.length - 1], sql: currentMessage.sql, metadata: currentMessage.metadata, text: currentMessage.text };
                 return newMessages;
               });
-              
               updateHighlights();
-            } catch (e) {
-              // Ignore invalid JSON chunks
-            }
+            } catch (e) { /* ignore */ }
           }
         }
       }
     } catch (error) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        text: 'Sorry, I encountered an error receiving the stream. Ensure the backend is running.',
-        isError: true
-      }]);
+      setMessages(prev => [...prev, { role: 'assistant', text: 'Sorry, I encountered an error receiving the stream. Ensure the backend is running.', isError: true }]);
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-white border border-slate-200 rounded-lg shadow-sm">
+    <div className={`flex flex-col h-full w-full rounded-lg shadow-sm shrink-0 border transition-colors duration-300 ${isDark ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Header */}
-      <div className="flex items-center gap-2 p-4 border-b border-slate-200 bg-slate-50 rounded-t-lg">
-        <Bot className="text-blue-600 w-5 h-5" />
-        <h2 className="font-semibold text-slate-800">Query Assistant</h2>
+      <div className={`flex items-center gap-2 p-4 border-b rounded-t-lg transition-colors duration-300 ${isDark ? 'bg-[#1E293B] border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+        <Bot className={`w-5 h-5 ${isDark ? 'text-blue-500' : 'text-blue-600'}`} />
+        <h2 className={`font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>Query Assistant</h2>
       </div>
 
       {/* Messages */}
@@ -173,25 +149,27 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'assistant' && (
-              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
                 <Bot className="w-4 h-4" />
               </div>
             )}
             
-            <div className={`max-w-[80%] rounded-lg p-3 text-sm ${
-              msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-800'
+            <div className={`max-w-[80%] rounded-lg p-3 text-sm flex flex-col ${
+              msg.role === 'user' ? 'bg-blue-600 text-white shadow-sm' 
+              : isDark ? 'bg-[#1E293B] border border-slate-700/50 text-slate-300 shadow-sm' 
+              : 'bg-slate-100 border border-slate-200 text-slate-800 shadow-sm'
             }`}>
               <p className="whitespace-pre-wrap">{msg.text}</p>
               
               {msg.sql && (
-                <div className="mt-3 p-2 bg-slate-800 rounded text-green-400 font-mono text-xs overflow-x-auto">
+                <div className={`mt-3 p-2 rounded font-mono text-xs overflow-x-auto ${isDark ? 'bg-[#0B1120] border border-slate-800 text-emerald-400' : 'bg-slate-800 border border-slate-700 text-green-400'}`}>
                   {msg.sql}
                 </div>
               )}
             </div>
 
             {msg.role === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 shrink-0">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
                 <User className="w-4 h-4" />
               </div>
             )}
@@ -199,11 +177,11 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
         ))}
         {loading && (
           <div className="flex gap-3 justify-start">
-             <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+             <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
                 <Bot className="w-4 h-4" />
               </div>
-             <div className="max-w-[80%] rounded-lg p-3 bg-slate-100 flex items-center">
-                 <Loader2 className="w-4 h-4 text-slate-600 animate-spin" />
+             <div className={`max-w-[80%] rounded-lg p-3 flex items-center shadow-sm ${isDark ? 'bg-[#1E293B] border border-slate-700/50' : 'bg-slate-100 border border-slate-200'}`}>
+                 <Loader2 className={`w-4 h-4 animate-spin ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
              </div>
           </div>
         )}
@@ -211,11 +189,14 @@ const ChatPanel = ({ onNodeSelect, onHighlightNodes }) => {
       </div>
 
       {/* Input */}
-      <div className="p-4 border-t border-slate-200 bg-white rounded-b-lg">
+      <div className={`p-4 border-t rounded-b-lg transition-colors duration-300 ${isDark ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-slate-200'}`}>
         <div className="flex items-center gap-2">
           <input
             type="text"
-            className="flex-1 p-2 border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className={`flex-1 p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+              isDark ? 'bg-[#0F172A] border border-slate-700 text-slate-200 placeholder-slate-500' 
+              : 'bg-white border border-slate-300 text-slate-800 placeholder-slate-400'
+            }`}
             placeholder="Ask a question about the graph..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
