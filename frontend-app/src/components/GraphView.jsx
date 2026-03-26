@@ -45,7 +45,16 @@ const THEMES = {
 
 const SKIP_KEYS = new Set(['id', 'label', 'type', 'x', 'y', 'vx', 'vy', 'fx', 'fy', 'index', 'color', 'indexColor', '__indexColor', 'nodeVal', 'val', '__threeObj']);
 
-const GraphView = ({ graphData, onNodeClick, onNodeHoverProp, highlightedNodes, theme = 'light' }) => {
+const GraphView = ({ 
+  graphData, 
+  onNodeClick, 
+  onNodeRightClick,
+  onNodeDoubleClick,
+  onNodeHoverProp, 
+  highlightedNodes, 
+  highlightedLinks, 
+  theme = 'light' 
+}) => {
   const fgRef = useRef();
   const containerRef = useRef();
   const tipRef = useRef();
@@ -119,15 +128,37 @@ const GraphView = ({ graphData, onNodeClick, onNodeHoverProp, highlightedNodes, 
     fg.d3Force('charge')?.strength(-150);
   }, [displayData, degreeMap]);
 
-  // ── Mouse Follow Tooltip ────────────────────────────────────────────────
+  // ── Mouse Follow Tooltip (Viewport-Aware & Crash-Proof) ────────────────
   useEffect(() => {
     const handleMouseMove = (e) => {
-      if (tipRef.current && hoveredNodeRef.current) {
+      if (tipRef.current && hoveredNodeRef.current && containerRef.current) {
+        const tipEl = tipRef.current;
+        // Wait for it to render to get actual dimensions
+        if (tipEl.offsetWidth === 0) return;
+
         const rect = containerRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left + 16;
-        const y = e.clientY - rect.top + 16;
-        tipRef.current.style.left = `${Math.min(x, width - 310)}px`;
-        tipRef.current.style.top = `${Math.min(y, height - 60)}px`;
+        
+        // Base coordinates initially placed 16px to the bottom-right of cursor
+        let x = e.clientX - rect.left + 16;
+        let y = e.clientY - rect.top + 16;
+        
+        // Calculate potential overflow against actual window boundaries
+        const overflowX = (e.clientX + tipEl.offsetWidth + 20) - window.innerWidth;
+        const overflowY = (e.clientY + tipEl.offsetHeight + 20) - window.innerHeight;
+
+        // If it overflows the right side, flip it to the left side of the cursor
+        if (overflowX > 0) {
+          x = (e.clientX - rect.left) - tipEl.offsetWidth - 16;
+        }
+        
+        // If it overflows the bottom, flip it ABOVE the cursor
+        if (overflowY > 0) {
+          y = (e.clientY - rect.top) - tipEl.offsetHeight - 16;
+        }
+
+        // Final safety clamp to prevent it from escaping the top/left of the container entirely
+        tipEl.style.left = `${Math.max(8, x)}px`;
+        tipEl.style.top = `${Math.max(8, y)}px`;
       }
     };
     const c = containerRef.current;
@@ -264,14 +295,55 @@ const GraphView = ({ graphData, onNodeClick, onNodeHoverProp, highlightedNodes, 
           d3VelocityDecay={0.5}
           onNodeHover={handleNodeHover}
           onNodeClick={(node) => onNodeClick?.(node)}
+          onNodeRightClick={(node, event) => {
+            if (event && event.preventDefault) event.preventDefault();
+            onNodeRightClick?.(node);
+          }}
+          onNodeDoubleClick={(node) => onNodeDoubleClick?.(node)}
           
           // Edge Styling
-          linkColor={link => link.is_core === false ? t.metaEdge : (theme === 'dark' ? 'rgba(100, 116, 139, 0.25)' : 'rgba(148, 163, 184, 0.4)')}
-          linkWidth={link => link.is_core === false ? 0.3 : 0.8}
-          linkDirectionalParticles={link => link.is_core === false ? 0 : 2}
-          linkDirectionalParticleWidth={1.5}
-          linkDirectionalParticleSpeed={0.006}
-          linkDirectionalParticleColor={() => theme === 'dark' ? '#CBD5E1' : '#64748B'}
+          linkColor={link => {
+             if (!highlightedLinks?.size) return link.is_core === false ? t.metaEdge : (theme === 'dark' ? 'rgba(100, 116, 139, 0.25)' : 'rgba(148, 163, 184, 0.4)');
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks.has(`${sid}-${tid}`) || highlightedLinks.has(`${tid}-${sid}`)) {
+                 return theme === 'dark' ? 'rgba(234, 179, 8, 0.9)' : 'rgba(217, 119, 6, 0.9)'; // Bright Amber
+             }
+             // Dim non-highlighted links significantly
+             return theme === 'dark' ? 'rgba(51, 65, 85, 0.15)' : 'rgba(226, 232, 240, 0.2)';
+          }}
+          linkWidth={link => {
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks?.has(`${sid}-${tid}`) || highlightedLinks?.has(`${tid}-${sid}`)) return 3.0;
+             return link.is_core === false ? 0.3 : 0.8;
+          }}
+          linkDirectionalParticles={link => {
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks?.has(`${sid}-${tid}`) || highlightedLinks?.has(`${tid}-${sid}`)) return 6;
+             return link.is_core === false ? 0 : 2;
+          }}
+          linkDirectionalParticleWidth={link => {
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks?.has(`${sid}-${tid}`) || highlightedLinks?.has(`${tid}-${sid}`)) return 4.0;
+             return 1.5;
+          }}
+          linkDirectionalParticleSpeed={link => {
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks?.has(`${sid}-${tid}`) || highlightedLinks?.has(`${tid}-${sid}`)) return 0.012;
+             return 0.006;
+          }}
+          linkDirectionalParticleColor={link => {
+             const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+             const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+             if (highlightedLinks?.has(`${sid}-${tid}`) || highlightedLinks?.has(`${tid}-${sid}`)) {
+                 return theme === 'dark' ? '#FDE047' : '#F59E0B'; // Bright Gold particles
+             }
+             return theme === 'dark' ? '#CBD5E1' : '#64748B';
+          }}
           
           nodeCanvasObject={(node, ctx, globalScale) => {
             const deg = degreeMap[node.id] || 1;
@@ -279,15 +351,24 @@ const GraphView = ({ graphData, onNodeClick, onNodeHoverProp, highlightedNodes, 
             const isHigh = !!highlightedNodes?.has(node.id);
             const style = TYPE_STYLE[node.type] || DEFAULT_STYLE;
 
-            const radius = isHigh ? 5 : isHovered ? 4.5 : Math.min(2 + Math.log10(deg), 4);
+            // Give AI highlighted nodes a noticeably larger size bump (reduced by ~12% from previous version)
+            const radius = isHigh ? Math.max(8, 12.5 / globalScale) : isHovered ? 4.5 : Math.min(2 + Math.log10(deg), 4);
 
             ctx.shadowColor = style.fill; 
-            ctx.shadowBlur = isHovered || isHigh ? 15 : Math.min(deg, 8);
+            // Enhance glow dramatically if node is highlighted
+            ctx.shadowBlur = isHigh ? 35 : isHovered ? 15 : Math.min(deg, 8);
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
-            ctx.fillStyle = isHigh ? (theme === 'dark' ? '#F87171' : '#DC2626') : style.fill;
+            ctx.fillStyle = style.fill; // Now using native color even for highlights
             ctx.fill();
+            
+            // Draw a prominent thick outer ring for highlighted nodes to distinguish them
+            if (isHigh) {
+              ctx.strokeStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.2)';
+              ctx.lineWidth = 4 / globalScale;
+              ctx.stroke();
+            }
             ctx.shadowBlur = 0;
 
             if (isHovered || (deg > 15 && globalScale > 1.2)) {

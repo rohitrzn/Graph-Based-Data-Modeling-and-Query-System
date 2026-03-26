@@ -8,6 +8,7 @@ function App() {
   const [graphData, setGraphData] = useState(null);
   const [nodeToChat, setNodeToChat] = useState(null);
   const [highlightedNodes, setHighlightedNodes] = useState(new Set());
+  const [highlightedLinks, setHighlightedLinks] = useState(new Set());
   const [error, setError] = useState('');
   const [theme, setTheme] = useState('light');
 
@@ -62,16 +63,61 @@ function App() {
               <GraphView 
                 graphData={graphData} 
                 onNodeClick={(node) => {
+                  if (!node || !graphData) return;
+                  
+                  // Toggle Logic: If it's already highlighted, remove this node's immediate neighborhood highlights
+                  if (highlightedNodes.has(node.id)) {
+                    setHighlightedNodes(prev => {
+                        const copy = new Set(prev);
+                        copy.delete(node.id);
+                        // Optional: remove neighbors that are ONLY connected to this node 
+                        // But for a simple toggle, just removing the clicked node or resetting is safer.
+                        // The user said: "1 left click for unhighlighting"
+                        return new Set(); // Resetting for simplicity as "unhighlighting" usually clears the focused state
+                    });
+                    setHighlightedLinks(new Set());
+                    return;
+                  }
+
+                  // Calculate Neighborhood Highlights
+                  const newHighlightedNodes = new Set();
+                  const newHighlightedLinks = new Set();
+                  newHighlightedNodes.add(node.id);
+                  graphData.links.forEach(link => {
+                    const sid = String(typeof link.source === 'object' ? link.source.id : link.source);
+                    const tid = String(typeof link.target === 'object' ? link.target.id : link.target);
+                    if (sid === node.id || tid === node.id) {
+                      newHighlightedNodes.add(sid);
+                      newHighlightedNodes.add(tid);
+                      newHighlightedLinks.add(`${sid}-${tid}`);
+                      newHighlightedLinks.add(`${tid}-${sid}`);
+                    }
+                  });
+                  setHighlightedNodes(newHighlightedNodes);
+                  setHighlightedLinks(newHighlightedLinks);
+                }}
+                onNodeRightClick={(node) => {
                   if (node) setNodeToChat(`${node.type.replace(/_/g, ' ')}: ${node.id}`);
                 }}
+                onNodeDoubleClick={(node) => {
+                  console.log("Future Expansion Triggered for:", node.id);
+                  // Phase 2 will be implemented here
+                }}
                 highlightedNodes={highlightedNodes}
+                highlightedLinks={highlightedLinks}
                 theme={theme}
               />
             </div>
 
             {/* Chat Interface (Right) */}
             <div className="w-[450px] shrink-0 h-full flex flex-col drop-shadow-sm transition-all focus-within:ring-2 ring-blue-500 rounded-lg">
-              <ChatPanel nodeToChat={nodeToChat} onHighlightNodes={setHighlightedNodes} theme={theme} />
+              <ChatPanel 
+                nodeToChat={nodeToChat} 
+                onHighlightNodes={setHighlightedNodes}
+                onHighlightLinks={setHighlightedLinks}
+                graphData={graphData}
+                theme={theme} 
+              />
             </div>
           </>
         )}

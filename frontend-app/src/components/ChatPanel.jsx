@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 
-const ChatPanel = ({ nodeToChat, onHighlightNodes, theme = 'light' }) => {
+const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, theme = 'light' }) => {
   const [messages, setMessages] = useState([{ role: 'assistant', text: 'Hello! Ask me any questions about the data.' }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -52,44 +52,78 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, theme = 'light' }) => {
       let textIds = new Set(), sqlIds = new Set();
       
       const extractIds = (text, dataArray, targetSet) => {
+          if (!graphData?.nodes) return;
+          const validNodeIds = new Set(graphData.nodes.map(n => String(n.id)));
+          
           if (text) {
-              const words = text.split(/\s+/);
+              // Extract potential IDs (numbers or alphanumeric codes)
+              const words = text.split(/[\s,.-]+/);
               words.forEach(word => {
-                  const clean = word.replace(/[^a-zA-Z0-9-]/g, '');
-                  if (clean.length > 0) {
-                     targetSet.add(`customer_${clean}`);
-                     targetSet.add(`company_${clean}`);
-                     targetSet.add(`billing_${clean}`);
-                     targetSet.add(`accounting_${clean}`);
+                  const clean = word.trim();
+                  // Check if the word exactly matches ANY node ID in the graph
+                  if (clean.length > 0 && validNodeIds.has(clean)) {
+                      targetSet.add(clean);
                   }
+                  // Fallback: Check if prefix-added versions exist (since the LLM might just say "320000083")
+                  if (validNodeIds.has(`business_partners_${clean}`)) targetSet.add(`business_partners_${clean}`);
+                  if (validNodeIds.has(`sales_order_headers_${clean}`)) targetSet.add(`sales_order_headers_${clean}`);
+                  if (validNodeIds.has(`products_${clean}`)) targetSet.add(`products_${clean}`);
+                  if (validNodeIds.has(`outbound_delivery_headers_${clean}`)) targetSet.add(`outbound_delivery_headers_${clean}`);
+                  if (validNodeIds.has(`billing_document_headers_${clean}`)) targetSet.add(`billing_document_headers_${clean}`);
+                  if (validNodeIds.has(`payments_accounts_receivable_${clean}`)) targetSet.add(`payments_accounts_receivable_${clean}`);
+                  if (validNodeIds.has(`journal_entry_items_accounts_receivable_${clean}`)) targetSet.add(`journal_entry_items_accounts_receivable_${clean}`);
               });
           }
           if (dataArray) {
               dataArray.forEach(row => {
-                  if (row.id) {
-                      targetSet.add(`customer_${row.id}`);
-                      targetSet.add(`company_${row.id}`);
-                      targetSet.add(`billing_${row.id}`);
-                      targetSet.add(`accounting_${row.id}`);
-                  }
-                  if (row.customer_id) targetSet.add(`customer_${row.customer_id}`);
-                  if (row.company_id) targetSet.add(`company_${row.company_id}`);
-                  if (row.accounting_document_id) targetSet.add(`accounting_${row.accounting_document_id}`);
+                  ['id', 'customer_id', 'company_id', 'accounting_document_id', 'sales_order', 'delivery', 'product'].forEach(key => {
+                      if (row[key]) {
+                          const val = String(row[key]);
+                          if (validNodeIds.has(val)) targetSet.add(val);
+                          else if (validNodeIds.has(`business_partners_${val}`)) targetSet.add(`business_partners_${val}`);
+                          else if (validNodeIds.has(`sales_order_headers_${val}`)) targetSet.add(`sales_order_headers_${val}`);
+                          else if (validNodeIds.has(`products_${val}`)) targetSet.add(`products_${val}`);
+                          else if (validNodeIds.has(`outbound_delivery_headers_${val}`)) targetSet.add(`outbound_delivery_headers_${val}`);
+                          else if (validNodeIds.has(`billing_document_headers_${val}`)) targetSet.add(`billing_document_headers_${val}`);
+                          else if (validNodeIds.has(`payments_accounts_receivable_${val}`)) targetSet.add(`payments_accounts_receivable_${val}`);
+                          else if (validNodeIds.has(`journal_entry_items_accounts_receivable_${val}`)) targetSet.add(`journal_entry_items_accounts_receivable_${val}`);
+                      }
+                  });
               });
           }
       };
 
       const updateHighlights = () => {
-         if (!onHighlightNodes) return;
-         const validTextIds = new Set();
-         textIds.forEach(id => { if (sqlIds.has(id)) validTextIds.add(id); });
+         if (!onHighlightNodes || !onHighlightLinks || !graphData?.links) return;
+         
+         // Completely re-evaluate textIds based on the full combined string so streamed tokens don't break regex
+         textIds.clear();
+         extractIds(userMessage.text + ' ' + currentMessage.text, null, textIds);
 
-         if (validTextIds.size > 0) onHighlightNodes(validTextIds);
-         else if (sqlIds.size > 0) onHighlightNodes(sqlIds);
-         else onHighlightNodes(textIds);
+         // Combine textIds and sqlIds. That way, if the LLM talks about a path, 
+         // the intermediate connecting nodes from the SQL data will also be highlighted 
+         // allowing continuous edge paths to form.
+         let finalNodesToHighlight = new Set([...textIds, ...sqlIds]);
+         
+         onHighlightNodes(finalNodesToHighlight);
+         
+         // Path Calculation: If multiple nodes are highlighted, find edges between them
+         const linksToHighlight = new Set();
+         if (finalNodesToHighlight.size > 1) {
+             const nodeArr = Array.from(finalNodesToHighlight);
+             graphData.links.forEach(l => {
+                 const sid = String(typeof l.source === 'object' ? l.source.id : l.source);
+                 const tid = String(typeof l.target === 'object' ? l.target.id : l.target);
+                 // If the link connects any two nodes currently highlighted
+                 if (finalNodesToHighlight.has(sid) && finalNodesToHighlight.has(tid)) {
+                     linksToHighlight.add(`${sid}-${tid}`);
+                     linksToHighlight.add(`${tid}-${sid}`); // Add both directions for easy lookup
+                 }
+             });
+         }
+         onHighlightLinks(linksToHighlight);
       };
 
-      extractIds(userMessage.text, null, textIds);
       updateHighlights();
 
       let buffer = '';
@@ -113,7 +147,6 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, theme = 'light' }) => {
                 extractIds(null, data.data, sqlIds);
               } else if (data.type === 'text') {
                 currentMessage.text += data.content;
-                extractIds(data.content, null, textIds);
               } else if (data.type === 'error') {
                 currentMessage.text += data.response;
               } else if (data.error) {

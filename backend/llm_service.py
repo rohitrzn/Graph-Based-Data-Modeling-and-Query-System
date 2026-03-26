@@ -29,6 +29,13 @@ Rules:
 7. CRITICAL SYNTAX RULE: You MUST strictly generate ONLY ONE contiguous SQL statement. NEVER output multiple statements separated by semicolons. If asked to count or query completely unrelated tables simultaneously, YOU MUST WRAP EACH SUBQUERY IN PARENTHESES AND PUT A SINGLE 'SELECT' AT THE VERY BEGINNING!
    - CORRECT: `SELECT (SELECT COUNT(*) FROM tableA) as count_A, (SELECT COUNT(*) FROM tableB) as count_B`
    - WRONG (WILL CRASH): `SELECT COUNT(*) FROM tableA, SELECT COUNT(*) FROM tableB`
+8. SCHEMA MAPPING: When querying for a specific product referenced in sales orders, the `sales_order_items` table connects using the `material` column. Never use `product` in `sales_order_items`. Example: `WHERE sales_order_items.material = 'S89...'` or `JOIN products ON products.product = sales_order_items.material`.
+9. PROCESS FLOW LOGIC: 
+   - A 'Broken Flow' or 'Incomplete Flow' means a Sales Order has a Delivery but NO Billing Document, or a Delivery exists for the SO but the Billing record is missing.
+   - Status Codes: In `sales_order_headers`: `overallDeliveryStatus` 'A' (Open/Not yet delivered), 'C' (Completely delivered). The status column `overallOrdReltdBillgStatus` is currently empty.
+   - Identifying Incomplete Flows: To correctly find these, you MUST use explicit JOINS between `sales_order_headers`, `outbound_delivery_items`, and `billing_document_items`. 
+   - Example (Delivered but not Billed): `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
+   - Use these joins over row-level status characters when specifically checking for flow consistency across documents.
 
 Step 1: Convert query to SQL.
 When provided with a user question, return ONLY the raw SQL query string. No formatting ticks (```), no explanations.
