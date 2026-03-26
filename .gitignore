@@ -10,6 +10,8 @@ backend/*.py[cod]
 backend/*$py.class
 backend/.env
 backend/graph.db*
+backend/graph*.db*
+graph*.db*
 
 # --- Frontend (Node/React) ---
 frontend-app/node_modules/

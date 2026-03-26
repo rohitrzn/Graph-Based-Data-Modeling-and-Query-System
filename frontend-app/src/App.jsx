@@ -3,6 +3,7 @@ import axios from 'axios';
 import GraphView from './components/GraphView';
 import ChatPanel from './components/ChatPanel';
 import { Network, Moon, Sun } from 'lucide-react';
+import { apiUrl } from './config';
 
 function App() {
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -19,7 +20,7 @@ function App() {
   useEffect(() => {
     const fetchGraphData = async () => {
       try {
-        const res = await axios.get('http://127.0.0.1:8000/api/graph');
+        const res = await axios.get(apiUrl('/api/graph'));
         fullGraphData.current = res.data;
         
         // Initial view: only Header nodes (non-items)

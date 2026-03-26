@@ -5,10 +5,13 @@ from sqlalchemy import text
 import json
 import sqlite3
 import datetime
+import re
+from pathlib import Path
 from groq import Groq
 
 # Load environment variables from .env file
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 # Configure Groq
 api_key = os.getenv("GROQ_API_KEY")
@@ -27,6 +30,7 @@ Rules:
 6. PRIMARY KEYS: Always include primary keys (e.g. `soldToParty`, `deliveryDocument`, `billingDocument`) in your SELECT.
 7. O2C QUERY LOGIC:
    - MOST BILLED PRODUCTS: Use `billing_document_items` (column `material`) and count.
+    - BILLING PARTNERS: If asked "how many billing partners", count from `business_partners.businessPartner` unless the user explicitly asks for billed customers appearing in invoices.
    - FULL FLOW TRACING: Start with `sales_order_headers`, join `outbound_delivery_items` (on `referenceSdDocument`), then `billing_document_items` (on `referenceSdDocument`), then `journal_entry_items_accounts_receivable` (on `referenceDocument`).
    - BROKEN/INCOMPLETE FLOWS (e.g., delivered but not billed):
      `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
@@ -34,6 +38,124 @@ Rules:
 
 Step 1: Convert query to SQL. Return ONLY raw SQL.
 """
+
+def apply_domain_overrides(question: str, sql: str) -> str:
+    rule_sql = get_rule_based_sql(question)
+    if rule_sql:
+        return rule_sql
+
+    q = (question or "").lower()
+    count_intent = any(token in q for token in ["how many", "count", "number of"])
+    mentions_billing_partner = ("billing partner" in q) or ("billing partners" in q)
+    explicit_invoice_scope = any(token in q for token in ["invoice", "billing document", "billed to"])
+
+    # Users commonly mean master partner count, not only invoice sold-to values.
+    if count_intent and mentions_billing_partner and not explicit_invoice_scope:
+        return (
+            "SELECT COUNT(DISTINCT businessPartner) AS total_billing_partners, "
+            "GROUP_CONCAT(DISTINCT businessPartner) AS billing_partner_ids "
+            "FROM business_partners"
+        )
+
+    return sql
+
+def is_domain_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+
+    # Fast fail for clearly unrelated requests.
+    unrelated_markers = [
+        "write a poem", "write a story", "joke", "weather", "capital of",
+        "recipe", "movie", "sports", "politics", "stock price", "song",
+        "creative writing", "who won", "translate this"
+    ]
+    if any(marker in q for marker in unrelated_markers):
+        return False
+
+    domain_markers = [
+        "sales order", "delivery", "billing", "invoice", "journal", "payment",
+        "product", "business partner", "o2c", "order-to-cash", "sap",
+        "flow", "trace", "dataset", "table", "sql"
+    ]
+    return any(marker in q for marker in domain_markers)
+
+def _extract_first_numeric_id(question: str):
+    m = re.search(r"\b\d{4,}\b", question or "")
+    return m.group(0) if m else None
+
+def get_rule_based_sql(question: str):
+    q = (question or "").lower()
+
+    count_intent = any(token in q for token in ["how many", "count", "number of"])
+    mentions_billing_partner = ("billing partner" in q) or ("billing partners" in q)
+    explicit_invoice_scope = any(token in q for token in ["invoice", "billing document", "billed to"])
+    if count_intent and mentions_billing_partner and not explicit_invoice_scope:
+        return (
+            "SELECT COUNT(DISTINCT businessPartner) AS total_billing_partners, "
+            "GROUP_CONCAT(DISTINCT businessPartner) AS billing_partner_ids "
+            "FROM business_partners"
+        )
+
+    # a) Highest billed products
+    asks_top_products = (
+        ("highest" in q or "most" in q or "top" in q)
+        and "product" in q
+        and ("billing" in q or "invoice" in q)
+    )
+    if asks_top_products:
+        return (
+            "SELECT material AS product_id, "
+            "COUNT(DISTINCT billingDocument) AS billing_document_count "
+            "FROM billing_document_items "
+            "GROUP BY material "
+            "ORDER BY billing_document_count DESC, product_id"
+        )
+
+    # b) Trace full billing flow
+    asks_trace_flow = (
+        ("trace" in q or "full flow" in q or ("flow" in q and "billing" in q))
+        and "billing document" in q
+    )
+    if asks_trace_flow:
+        doc_id = _extract_first_numeric_id(question)
+        where_clause = f" WHERE b.billingDocument = '{doc_id}'" if doc_id else ""
+        return (
+            "SELECT DISTINCT "
+            "so.salesOrder AS sales_order, "
+            "di.deliveryDocument AS delivery_document, "
+            "b.billingDocument AS billing_document, "
+            "je.referenceDocument AS journal_reference_document, "
+            "je.customer AS journal_customer "
+            "FROM billing_document_headers b "
+            "LEFT JOIN billing_document_items bi ON b.billingDocument = bi.billingDocument "
+            "LEFT JOIN outbound_delivery_items di ON bi.referenceSdDocument = di.deliveryDocument "
+            "LEFT JOIN sales_order_headers so ON (di.referenceSdDocument = so.salesOrder OR bi.referenceSdDocument = so.salesOrder) "
+            "LEFT JOIN journal_entry_items_accounts_receivable je ON je.referenceDocument = b.billingDocument"
+            f"{where_clause} "
+            "ORDER BY billing_document, delivery_document, sales_order"
+        )
+
+    # c) Broken or incomplete flows
+    asks_broken_flow = any(token in q for token in [
+        "broken", "incomplete", "delivered but not billed", "billed without delivery"
+    ]) and ("flow" in q or "sales order" in q or "delivery" in q or "billing" in q)
+    if asks_broken_flow:
+        return (
+            "SELECT DISTINCT so.salesOrder AS flow_reference, 'DELIVERED_NOT_BILLED' AS issue_type "
+            "FROM sales_order_headers so "
+            "JOIN outbound_delivery_items di ON di.referenceSdDocument = so.salesOrder "
+            "LEFT JOIN billing_document_items bi ON bi.referenceSdDocument = di.deliveryDocument "
+            "WHERE bi.billingDocument IS NULL "
+            "UNION "
+            "SELECT DISTINCT bi.referenceSdDocument AS flow_reference, 'BILLED_WITHOUT_DELIVERY' AS issue_type "
+            "FROM billing_document_items bi "
+            "LEFT JOIN outbound_delivery_items di ON bi.referenceSdDocument = di.deliveryDocument "
+            "WHERE di.deliveryDocument IS NULL AND bi.referenceSdDocument IS NOT NULL "
+            "ORDER BY flow_reference, issue_type"
+        )
+
+    return None
 
 def get_dynamic_schema(db: Session) -> str:
     try:
@@ -114,7 +236,7 @@ def generate_nl_response(question: str, sql: str, data: list, history: list = No
     messages = []
     messages.append({
         "role": "system", 
-        "content": "You are a helpful AI answering data questions naturally and accurately based on returned SQL data context. Do not output markdown code blocks unless requested. Be concise and helpful. IMPORTANT: When mentioning specific entities (like Sales Orders or Business Partners), please include their ID in parentheses if available, e.g., 'Business Partner X (bp_123)', so the UI can highlight them."
+        "content": "You are a helpful AI answering data questions naturally and accurately based on returned SQL data context. Do not output markdown code blocks unless requested. Be concise and helpful. IMPORTANT: Never invent entities, IDs, names, or examples that are not present in SQL data. If only aggregated rows are available, state the aggregate only and do not fabricate sample records. When mentioning specific entities that are present in data, include their exact IDs."
     })
     
     if history:
@@ -129,7 +251,7 @@ def generate_nl_response(question: str, sql: str, data: list, history: list = No
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            temperature=0.7,
+            temperature=0.2,
             stream=True
         )
         for chunk in response:
@@ -148,8 +270,18 @@ async def process_query(db: Session, question: str, history: list = []):
     if not api_key:
         yield f"data: {json.dumps({'error': 'GROQ_API_KEY not set'})}\n\n"
         return
+
+    if not is_domain_question(question):
+        yield f"data: {json.dumps({'type': 'error', 'response': 'This system is designed to answer questions related to the provided dataset only.', 'sql': '', 'data': []})}\n\n"
+        return
         
-    sql = generate_sql(db, question, history)
+    precomputed_sql = get_rule_based_sql(question)
+    if precomputed_sql:
+        sql = precomputed_sql
+    else:
+        sql = generate_sql(db, question, history)
+        if sql and sql != "ERROR_API":
+            sql = apply_domain_overrides(question, sql)
     if sql == "ERROR_API":
         yield f"data: {json.dumps({'type': 'error', 'response': 'I cannot answer this right now because the Groq API quota limit was exceeded. Please wait a moment and try again.', 'sql': '', 'data': []})}\n\n"
         return

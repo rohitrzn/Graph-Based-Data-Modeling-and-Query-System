@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, Download } from 'lucide-react';
+import { apiUrl } from '../config';
 
 const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, theme = 'light' }) => {
   const [messages, setMessages] = useState([{ role: 'assistant', text: 'Hello! Ask me any questions about the data.' }]);
@@ -53,7 +54,7 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
         .map(msg => ({ role: msg.role, content: msg.text }));
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/query', {
+      const response = await fetch(apiUrl('/api/query'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: input, history: historyPayload }),
@@ -69,58 +70,73 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
       setLoading(false);
 
       let textIds = new Set(), sqlIds = new Set();
+
+      const shouldGlowPathForQuery = (questionText, sqlText) => {
+        const q = String(questionText || '').toLowerCase();
+        const s = String(sqlText || '').toLowerCase();
+
+        const flowKeywords = [
+          'trace', 'full flow', 'flow', 'path', 'journey', 'lineage', 'mapping',
+          'connect', 'relationship', 'linked', 'how is', 'how are', 'from', 'to',
+          'broken flow', 'incomplete flow', 'delivered but not billed', 'billed without delivery'
+        ];
+
+        const likelyCategoryOnly = [
+          'how many', 'count', 'number of', 'list all', 'show all', 'all invoices',
+          'all sales orders', 'all products', 'all business partners'
+        ];
+
+        const hasFlowKeyword = flowKeywords.some((kw) => q.includes(kw));
+        const isCategoryQuestion = likelyCategoryOnly.some((kw) => q.includes(kw));
+        const hasJoinGraphPattern = /\bjoin\b/.test(s) && /sales_order|delivery|billing|journal/.test(s);
+
+        if (hasFlowKeyword) return true;
+        if (isCategoryQuestion) return false;
+        return hasJoinGraphPattern;
+      };
       
       const extractIds = (text, dataArray, targetSet) => {
           if (!graphData?.nodes) return;
           const validNodeIds = new Set(graphData.nodes.map(n => String(n.id)));
+
+          const tryAddCandidate = (rawValue) => {
+            if (rawValue === null || rawValue === undefined) return;
+            const str = String(rawValue);
+            const tokens = str.split(/[\s,;|]+/).map(t => t.trim()).filter(Boolean);
+            tokens.forEach((token) => {
+              if (validNodeIds.has(token)) {
+                targetSet.add(token);
+                return;
+              }
+              if (validNodeIds.has(`business_partners_${token}`)) targetSet.add(`business_partners_${token}`);
+              if (validNodeIds.has(`sales_order_headers_${token}`)) targetSet.add(`sales_order_headers_${token}`);
+              if (validNodeIds.has(`products_${token}`)) targetSet.add(`products_${token}`);
+              if (validNodeIds.has(`outbound_delivery_headers_${token}`)) targetSet.add(`outbound_delivery_headers_${token}`);
+              if (validNodeIds.has(`billing_document_headers_${token}`)) targetSet.add(`billing_document_headers_${token}`);
+              if (validNodeIds.has(`payments_accounts_receivable_${token}`)) targetSet.add(`payments_accounts_receivable_${token}`);
+              if (validNodeIds.has(`journal_entry_items_accounts_receivable_${token}`)) targetSet.add(`journal_entry_items_accounts_receivable_${token}`);
+            });
+          };
           
           if (text) {
               // Extract potential IDs (numbers or alphanumeric codes)
               const words = text.split(/[\s,.-]+/);
               words.forEach(word => {
                   const clean = word.trim();
-                  // Check if the word exactly matches ANY node ID in the graph
-                  if (clean.length > 0 && validNodeIds.has(clean)) {
-                      targetSet.add(clean);
-                  }
+                if (!clean.length) return;
+                // Check if the word exactly matches ANY node ID in the graph
+                tryAddCandidate(clean);
                   
                   // Regex for picking up (id) or [id] patterns from LLM text
                   const match = clean.match(/[\(\[](.*?)[\)\]]/);
-                  if (match && validNodeIds.has(match[1])) {
-                      targetSet.add(match[1]);
+                if (match) {
+                  tryAddCandidate(match[1]);
                   }
-
-                  // Fallback: Check if prefix-added versions exist (since the LLM might just say "320000083")
-                  if (validNodeIds.has(`business_partners_${clean}`)) targetSet.add(`business_partners_${clean}`);
-                  if (validNodeIds.has(`sales_order_headers_${clean}`)) targetSet.add(`sales_order_headers_${clean}`);
-                  if (validNodeIds.has(`products_${clean}`)) targetSet.add(`products_${clean}`);
-                  if (validNodeIds.has(`outbound_delivery_headers_${clean}`)) targetSet.add(`outbound_delivery_headers_${clean}`);
-                  if (validNodeIds.has(`billing_document_headers_${clean}`)) targetSet.add(`billing_document_headers_${clean}`);
-                  if (validNodeIds.has(`payments_accounts_receivable_${clean}`)) targetSet.add(`payments_accounts_receivable_${clean}`);
-                  if (validNodeIds.has(`journal_entry_items_accounts_receivable_${clean}`)) targetSet.add(`journal_entry_items_accounts_receivable_${clean}`);
               });
           }
           if (dataArray) {
               dataArray.forEach(row => {
-                  const keys = [
-                      'id', 'customer_id', 'company_id', 'accounting_document_id', 
-                      'sales_order', 'delivery', 'product', 'material',
-                      'businessPartner', 'business_partner', 'partner', 'supplier',
-                      'billingDocument', 'deliveryDocument', 'salesOrder', 'referenceSdDocument'
-                  ];
-                  keys.forEach(key => {
-                      if (row[key]) {
-                          const val = String(row[key]);
-                          if (validNodeIds.has(val)) targetSet.add(val);
-                          else if (validNodeIds.has(`business_partners_${val}`)) targetSet.add(`business_partners_${val}`);
-                          else if (validNodeIds.has(`sales_order_headers_${val}`)) targetSet.add(`sales_order_headers_${val}`);
-                          else if (validNodeIds.has(`products_${val}`)) targetSet.add(`products_${val}`);
-                          else if (validNodeIds.has(`outbound_delivery_headers_${val}`)) targetSet.add(`outbound_delivery_headers_${val}`);
-                          else if (validNodeIds.has(`billing_document_headers_${val}`)) targetSet.add(`billing_document_headers_${val}`);
-                          else if (validNodeIds.has(`payments_accounts_receivable_${val}`)) targetSet.add(`payments_accounts_receivable_${val}`);
-                          else if (validNodeIds.has(`journal_entry_items_accounts_receivable_${val}`)) targetSet.add(`journal_entry_items_accounts_receivable_${val}`);
-                      }
-                  });
+                Object.values(row || {}).forEach((value) => tryAddCandidate(value));
               });
           }
       };
@@ -136,18 +152,41 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
          // the intermediate connecting nodes from the SQL data will also be highlighted 
          // allowing continuous edge paths to form.
          let finalNodesToHighlight = new Set([...textIds, ...sqlIds]);
+
+         // Fallback: for aggregate answers without explicit IDs, highlight nodes from the primary SQL table.
+         if (finalNodesToHighlight.size === 0 && currentMessage.sql && graphData?.nodes) {
+           const fromMatch = currentMessage.sql.match(/\bFROM\s+([a-zA-Z0-9_]+)/i);
+           const tableName = fromMatch ? fromMatch[1] : null;
+           if (tableName) {
+             const prefix = `${tableName}_`;
+             let added = 0;
+             graphData.nodes.forEach((node) => {
+               if (added >= 300) return;
+               const nodeId = String(node.id || '');
+               if (nodeId.startsWith(prefix)) {
+                 finalNodesToHighlight.add(nodeId);
+                 added += 1;
+               }
+             });
+           }
+         }
          
          onHighlightNodes(finalNodesToHighlight);
+
+         const enablePathGlow = shouldGlowPathForQuery(userMessage.text, currentMessage.sql);
+         if (!enablePathGlow) {
+           onHighlightLinks(new Set());
+           return;
+         }
          
          // Path Calculation: If multiple nodes are highlighted, find edges between them
          const linksToHighlight = new Set();
-         if (finalNodesToHighlight.size > 1) {
-             const nodeArr = Array.from(finalNodesToHighlight);
+         if (finalNodesToHighlight.size > 0) {
              graphData.links.forEach(l => {
                  const sid = String(typeof l.source === 'object' ? l.source.id : l.source);
                  const tid = String(typeof l.target === 'object' ? l.target.id : l.target);
-                 // If the link connects any two nodes currently highlighted
-                 if (finalNodesToHighlight.has(sid) && finalNodesToHighlight.has(tid)) {
+             // Highlight any link touching a highlighted node for better visual discoverability.
+             if (finalNodesToHighlight.has(sid) || finalNodesToHighlight.has(tid)) {
                      linksToHighlight.add(`${sid}-${tid}`);
                      linksToHighlight.add(`${tid}-${sid}`); // Add both directions for easy lookup
                  }
