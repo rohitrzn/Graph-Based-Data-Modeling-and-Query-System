@@ -4,3 +4,4 @@ sqlalchemy
 google-generativeai
 pydantic
 python-dotenv
+groq

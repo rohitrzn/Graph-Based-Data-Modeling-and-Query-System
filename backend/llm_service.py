@@ -20,21 +20,32 @@ client = Groq(api_key=api_key) if api_key else None
 SCHEMA_CONTEXT = """
 You are an AI assistant that translates natural language inquiries into SQL queries for an SQLite database focusing on the Order-to-Cash (O2C) flow.
 
+The dataset contains these main tables (entities):
+- business_partners, business_partner_addresses
+- customer_company_assignments, customer_sales_area_assignments
+- sales_order_headers, sales_order_items, sales_order_schedule_lines
+- outbound_delivery_headers, outbound_delivery_items
+- billing_document_headers, billing_document_items, billing_document_cancellations
+- payments_accounts_receivable, journal_entry_items_accounts_receivable
+- products, product_descriptions, product_plants, product_storage_locations, plants
+
+Only a subset of these entities is visualized in the graph, but ALL of them are queryable via SQL.
+
 Rules:
 1. RESTRICTED DOMAIN: If the prompt is unrelated to the dataset (general knowledge, creative writing, etc.), respond EXACTLY with:
-   "This system is designed to answer questions related to the provided dataset only."
+    "This system is designed to answer questions related to the provided dataset only."
 2. NO HALLUCINATION: Only use provided schema. No markdown ticks.
-3. SINGLE SQL: Output ONLY one contiguous SQL statement. 
+3. SINGLE SQL: Output ONLY one contiguous SQL statement.
 4. NO RANDOM LIMITS: Return all matching rows unless specified.
 5. EXPLICIT JOINS: Use `LEFT JOIN tableB ON ...` instead of comma separation.
 6. PRIMARY KEYS: Always include primary keys (e.g. `soldToParty`, `deliveryDocument`, `billingDocument`) in your SELECT.
 7. O2C QUERY LOGIC:
-   - MOST BILLED PRODUCTS: Use `billing_document_items` (column `material`) and count.
+    - MOST BILLED PRODUCTS: Use `billing_document_items` (column `material`) and count.
     - BILLING PARTNERS: If asked "how many billing partners", count from `business_partners.businessPartner` unless the user explicitly asks for billed customers appearing in invoices.
-   - FULL FLOW TRACING: Start with `sales_order_headers`, join `outbound_delivery_items` (on `referenceSdDocument`), then `billing_document_items` (on `referenceSdDocument`), then `journal_entry_items_accounts_receivable` (on `referenceDocument`).
-   - BROKEN/INCOMPLETE FLOWS (e.g., delivered but not billed):
-     `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
-   - PRODUCT MAPPING: Use `sales_order_items.material` to join with `products.product`.
+    - FULL FLOW TRACING: Start with `sales_order_headers`, join `outbound_delivery_items` (on `referenceSdDocument`), then `billing_document_items` (on `referenceSdDocument`), then `journal_entry_items_accounts_receivable` (on `referenceDocument`).
+    - BROKEN/INCOMPLETE FLOWS (e.g., delivered but not billed):
+      `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
+    - PRODUCT MAPPING: Use `sales_order_items.material` to join with `products.product`.
 
 Step 1: Convert query to SQL. Return ONLY raw SQL.
 """
@@ -73,10 +84,32 @@ def is_domain_question(question: str) -> bool:
     if any(marker in q for marker in unrelated_markers):
         return False
 
+    # Treat any query mentioning one of the dataset entities or
+    # standard O2C terminology as in-domain. This list intentionally
+    # covers all 19 SAP O2C tables plus common conceptual words.
     domain_markers = [
-        "sales order", "delivery", "billing", "invoice", "journal", "payment",
-        "product", "business partner", "o2c", "order-to-cash", "sap",
-        "flow", "trace", "dataset", "table", "sql"
+        # High-level O2C terms
+        "o2c", "order-to-cash", "sap", "flow", "trace", "dataset", "table", "sql",
+        # Business partners and addresses
+        "business partner", "business partners", "bp", "partner", "partners",
+        "business_partner_addresses", "partner address", "partner addresses",
+        # Customers and assignments
+        "customer_company_assignments", "customer company", "company assignments",
+        "customer_sales_area_assignments", "sales area", "sales_area",
+        # Sales orders
+        "sales order", "sales orders", "sales_order_headers", "sales_order_items",
+        "sales_order_schedule_lines", "schedule line", "schedule lines",
+        # Deliveries
+        "outbound_delivery_headers", "outbound_delivery_items", "delivery", "deliveries",
+        # Billing
+        "billing_document_headers", "billing_document_items",
+        "billing_document_cancellations", "invoice", "invoices", "billing",
+        # Payments and journals
+        "payments_accounts_receivable", "journal_entry_items_accounts_receivable",
+        "journal entry", "journal entries", "payment", "payments",
+        # Products and plants
+        "products", "product", "product_descriptions", "product_plants",
+        "product_storage_locations", "plants", "plant", "storage location"
     ]
     return any(marker in q for marker in domain_markers)
 
@@ -229,7 +262,10 @@ def execute_sql(db: Session, sql: str):
         rows = [dict(row._mapping) for row in result]
         return rows
     except Exception as e:
-        return f"Error executing SQL: {e}"
+        # Log full SQL error server-side for debugging, but do not leak
+        # low-level engine details back to the chat user.
+        print(f"SQL execution error for query: {sql}\n{e}")
+        return "SQL_EXECUTION_ERROR"
 
 def generate_nl_response(question: str, sql: str, data: list, history: list = None):
     
@@ -290,8 +326,16 @@ async def process_query(db: Session, question: str, history: list = []):
         return
         
     data = execute_sql(db, sql)
-    if isinstance(data, str) and data.startswith("Error"):
-        yield f"data: {json.dumps({'type': 'error', 'response': f'The AI generated an invalid database query that crashed SQLite. Reason: {data}', 'sql': sql, 'data': []})}\n\n"
+    if isinstance(data, str):  # Guardrail for any SQL failure
+        guardrail_msg = (
+            "I couldn't generate a valid SQL query for that request. "
+            "This usually happens when the question implies relationships "
+            "or columns that don't exist in the underlying O2C dataset. "
+            "Please try rephrasing the question or focusing on a specific "
+            "entity (for example: sales orders, deliveries, invoices, "
+            "journal entries, products, or business partners)."
+        )
+        yield f"data: {json.dumps({'type': 'error', 'response': guardrail_msg, 'sql': sql, 'data': []})}\n\n"
         return
         
     initial_payload = {

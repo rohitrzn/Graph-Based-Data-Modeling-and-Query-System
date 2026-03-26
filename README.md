@@ -8,7 +8,6 @@ An interactive, LLM-powered SAP Order-to-Cash (O2C) dashboard that combines grap
 - [Key Technical Decisions](#key-technical-decisions)
 - [LLM Strategy and Guardrails](#llm-strategy-and-guardrails)
 - [Quick Start](#quick-start)
-- [Project Walkthrough](#project-walkthrough)
 
 ## Overview
 The platform provides two complementary workflows:
@@ -41,7 +40,7 @@ SQLite is used intentionally for this project scope:
 2. Strong performance for read-heavy O2C analysis with multi-table joins.
 3. Straightforward relational compatibility with the existing schema.
 
-## Key Technical Decisions
+## Technical Decisions
 
 ### 1. Hub-First Initial Graph View
 - Problem: Full line-item level rendering creates immediate visual noise.
@@ -56,6 +55,11 @@ SQLite is used intentionally for this project scope:
 - Item nodes are introduced only when users expand related headers.
 - New nodes inherit parent coordinates with slight jitter to avoid layout shock.
 - Result: Local expansion feels smooth while preserving global graph stability.
+
+### 4. Metadata Web Toggle (Process vs Data Web)
+- Normal Graph (default) shows only directed O2C process edges (Business Partner → Sales Order → Delivery → Invoice → Journal Entry), optimized for a clean "happy path" view.
+- The Metadata Web toggle reveals all underlying data relationships (shared product IDs, ship-to addresses, etc.), creating a denser web that supports impact analysis and data discovery.
+- Technically, Normal mode applies a strict edge filter for core process links; Metadata mode turns that filter off and surfaces the full relational fabric computed by the backend.
 
 ## LLM Strategy and Guardrails
 
@@ -104,9 +108,6 @@ npm install
 npm run dev
 ```
 Frontend default: `http://localhost:5173`
-
-## Project Walkthrough
-[Read the implementation walkthrough](walkthrough.md)
 
 ---
 Made by Rohit
