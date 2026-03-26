@@ -14,8 +14,11 @@ const THEMES = {
     styles: {
       business_partners: { fill: '#60A5FA', border: '#3B82F6', label: 'Business Partners' },
       sales_order_headers: { fill: '#FBBF24', border: '#F59E0B', label: 'Sales Orders' },
+      sales_order_items: { fill: '#FDE68A', border: '#FBBF24', label: 'SO Items' },
       outbound_delivery_headers: { fill: '#34D399', border: '#10B981', label: 'Deliveries' },
+      outbound_delivery_items: { fill: '#A7F3D0', border: '#34D399', label: 'DLV Items' },
       billing_document_headers: { fill: '#F87171', border: '#EF4444', label: 'Invoices' },
+      billing_document_items: { fill: '#FECACA', border: '#F87171', label: 'Bill Items' },
       payments_accounts_receivable: { fill: '#A78BFA', border: '#8B5CF6', label: 'Payments' },
       journal_entry_items_accounts_receivable: { fill: '#2DD4BF', border: '#14B8A6', label: 'Journal Entries' },
       products: { fill: '#D97706', border: '#B45309', label: 'Products' },
@@ -33,8 +36,11 @@ const THEMES = {
     styles: {
       business_partners: { fill: '#3B82F6', border: '#2563EB', label: 'Business Partners' },
       sales_order_headers: { fill: '#F59E0B', border: '#D97706', label: 'Sales Orders' },
+      sales_order_items: { fill: '#FCD34D', border: '#F59E0B', label: 'SO Items' },
       outbound_delivery_headers: { fill: '#10B981', border: '#059669', label: 'Deliveries' },
+      outbound_delivery_items: { fill: '#6EE7B7', border: '#10B981', label: 'DLV Items' },
       billing_document_headers: { fill: '#EF4444', border: '#DC2626', label: 'Invoices' },
+      billing_document_items: { fill: '#FCA5A5', border: '#EF4444', label: 'Bill Items' },
       payments_accounts_receivable: { fill: '#8B5CF6', border: '#7C3AED', label: 'Payments' },
       journal_entry_items_accounts_receivable: { fill: '#14B8A6', border: '#0D9488', label: 'Journal Entries' },
       products: { fill: '#92400E', border: '#78350F', label: 'Products' },
@@ -51,6 +57,8 @@ const GraphView = ({
   onNodeRightClick,
   onNodeDoubleClick,
   onNodeHoverProp, 
+  expandedNodes = new Set(),
+  canExpandMap = {},
   highlightedNodes, 
   highlightedLinks, 
   theme = 'light' 
@@ -124,8 +132,8 @@ const GraphView = ({
   useEffect(() => {
     if (!fgRef.current || !displayData?.nodes?.length) return;
     const fg = fgRef.current;
-    fg.d3Force('link')?.distance(30);
-    fg.d3Force('charge')?.strength(-150);
+    fg.d3Force('link')?.distance(20); // Tighter connections
+    fg.d3Force('charge')?.strength(-80); // Less repulsion to keep clusters closer
   }, [displayData, degreeMap]);
 
   // ── Mouse Follow Tooltip (Viewport-Aware & Crash-Proof) ────────────────
@@ -250,9 +258,10 @@ const GraphView = ({
           </label>
         </div>
 
-        {/* Legend */}
+        {/* Dynamic Legend */}
         <div className="backdrop-blur border rounded-lg p-3 shadow-xl pointer-events-auto transition-colors" style={{ background: t.panelBg, borderColor: t.panelBorder }}>
-          {Object.entries(TYPE_STYLE).map(([type, s]) => {
+          {Array.from(new Set(graphData.nodes.map(n => n.type))).map(type => {
+             const s = TYPE_STYLE[type] || DEFAULT_STYLE;
              if (type === 'default') return null;
              return (
               <div key={type} className="flex items-center gap-2 mb-1.5">
@@ -349,26 +358,53 @@ const GraphView = ({
             const deg = degreeMap[node.id] || 1;
             const isHovered = hoveredNodeRef.current?.id === node.id;
             const isHigh = !!highlightedNodes?.has(node.id);
+            const isExpanded = expandedNodes?.has(node.id);
+            const canExpand = canExpandMap?.[node.id];
             const style = TYPE_STYLE[node.type] || DEFAULT_STYLE;
 
-            // Give AI highlighted nodes a noticeably larger size bump (reduced by ~12% from previous version)
-            const radius = isHigh ? Math.max(8, 12.5 / globalScale) : isHovered ? 4.5 : Math.min(2 + Math.log10(deg), 4);
+            // 1. Calculate Radius
+            // Items (details) are smaller. Headers are normal sized. Highlights are larger.
+            const baseRadius = node.is_item ? 2.5 : Math.min(2 + Math.log10(deg), 5);
+            const radius = isHigh ? Math.max(8, 12.5 / globalScale) : isHovered ? (baseRadius * 1.3) : baseRadius;
 
+            // 2. Main Node Fill
             ctx.shadowColor = style.fill; 
-            // Enhance glow dramatically if node is highlighted
             ctx.shadowBlur = isHigh ? 35 : isHovered ? 15 : Math.min(deg, 8);
 
             ctx.beginPath();
             ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
-            ctx.fillStyle = style.fill; // Now using native color even for highlights
+            ctx.fillStyle = style.fill;
             ctx.fill();
             
-            // Draw a prominent thick outer ring for highlighted nodes to distinguish them
+            // 3. Highlight Ring
             if (isHigh) {
-              ctx.strokeStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.2)';
-              ctx.lineWidth = 4 / globalScale;
+              ctx.strokeStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.3)';
+              ctx.lineWidth = 3 / globalScale;
               ctx.stroke();
             }
+
+            // 4. Expansion Indicators (Only for Headers)
+            if (!node.is_item) {
+              if (isExpanded) {
+                // Active Expansion Ring (Solid)
+                ctx.strokeStyle = theme === 'dark' ? '#60A5FA' : '#3B82F6';
+                ctx.lineWidth = 2 / globalScale;
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius + 2.5 / globalScale, 0, 2 * Math.PI);
+                ctx.stroke();
+              } else if (canExpand) {
+                // Potential Expansion Ring (Dashed/Ghost)
+                ctx.strokeStyle = theme === 'dark' ? 'rgba(148, 163, 184, 0.4)' : 'rgba(100, 116, 139, 0.3)';
+                ctx.lineWidth = 1 / globalScale;
+                ctx.setLineDash([2, 2]);
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius + 2.5 / globalScale, 0, 2 * Math.PI);
+                ctx.stroke();
+                ctx.setLineDash([]); // Reset
+              }
+            }
+            
             ctx.shadowBlur = 0;
 
             if (isHovered || (deg > 15 && globalScale > 1.2)) {

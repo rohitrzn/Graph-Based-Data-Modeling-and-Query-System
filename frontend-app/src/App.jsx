@@ -5,7 +5,9 @@ import ChatPanel from './components/ChatPanel';
 import { Network, Moon, Sun } from 'lucide-react';
 
 function App() {
-  const [graphData, setGraphData] = useState(null);
+  const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+  const fullGraphData = React.useRef(null);
+  const [expandedNodes, setExpandedNodes] = useState(new Set());
   const [nodeToChat, setNodeToChat] = useState(null);
   const [highlightedNodes, setHighlightedNodes] = useState(new Set());
   const [highlightedLinks, setHighlightedLinks] = useState(new Set());
@@ -18,7 +20,18 @@ function App() {
     const fetchGraphData = async () => {
       try {
         const res = await axios.get('http://127.0.0.1:8000/api/graph');
-        setGraphData(res.data);
+        fullGraphData.current = res.data;
+        
+        // Initial view: only Header nodes (non-items)
+        const initialNodes = res.data.nodes.filter(n => !n.is_item);
+        const nodeIds = new Set(initialNodes.map(n => n.id));
+        const initialLinks = res.data.links.filter(l => {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            return nodeIds.has(s) && nodeIds.has(t);
+        });
+        
+        setGraphData({ nodes: initialNodes, links: initialLinks });
       } catch (err) {
         console.error('Failed to fetch graph data:', err);
         setError('Could not connect to the backend. Please ensure the FastAPI server is running.');
@@ -65,16 +78,12 @@ function App() {
                 onNodeClick={(node) => {
                   if (!node || !graphData) return;
                   
-                  // Toggle Logic: If it's already highlighted, remove this node's immediate neighborhood highlights
+                  // 1. Copy Data to Chat Assistant (Populate Query Bar)
+                  setNodeToChat(`${node.type.replace(/_/g, ' ')}: ${node.id}`);
+
+                  // 2. Toggle Highlighting Logic
                   if (highlightedNodes.has(node.id)) {
-                    setHighlightedNodes(prev => {
-                        const copy = new Set(prev);
-                        copy.delete(node.id);
-                        // Optional: remove neighbors that are ONLY connected to this node 
-                        // But for a simple toggle, just removing the clicked node or resetting is safer.
-                        // The user said: "1 left click for unhighlighting"
-                        return new Set(); // Resetting for simplicity as "unhighlighting" usually clears the focused state
-                    });
+                    setHighlightedNodes(new Set());
                     setHighlightedLinks(new Set());
                     return;
                   }
@@ -97,12 +106,75 @@ function App() {
                   setHighlightedLinks(newHighlightedLinks);
                 }}
                 onNodeRightClick={(node) => {
-                  if (node) setNodeToChat(`${node.type.replace(/_/g, ' ')}: ${node.id}`);
+                  if (!node || !fullGraphData.current) return;
+                  
+                  const isExpanded = expandedNodes.has(node.id);
+                  const nextExpanded = new Set(expandedNodes);
+                  if (isExpanded) nextExpanded.delete(node.id);
+                  else nextExpanded.add(node.id);
+                  
+                  setExpandedNodes(nextExpanded);
+                  
+                  // 1. Double check highlights (Auto-highlight the expanded node)
+                  const newHighlightNodes = new Set(highlightedNodes);
+                  newHighlightNodes.add(node.id);
+
+                  // 2. Re-calculate the visible subset
+                  const visibleNodes = fullGraphData.current.nodes.filter(n => !n.is_item);
+                  const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+                  
+                  // Add items directly connected to any expanded node
+                  fullGraphData.current.links.forEach(l => {
+                    const sid = String(typeof l.source === 'object' ? l.source.id : l.source);
+                    const tid = String(typeof l.target === 'object' ? l.target.id : l.target);
+                    
+                    if (nextExpanded.has(sid) || nextExpanded.has(tid)) {
+                      visibleNodeIds.add(sid);
+                      visibleNodeIds.add(tid);
+                      // Auto-highlight items as well? Let's stay with the header for now to avoid clutter
+                    }
+                  });
+
+                  // Build the node list, inheriting coordinates + small jitter to prevent "teleporting"
+                  const nextNodes = fullGraphData.current.nodes
+                    .filter(n => visibleNodeIds.has(n.id))
+                    .map(n => {
+                      const existing = graphData.nodes.find(en => en.id === n.id);
+                      if (existing) return existing;
+                      // New child node: spawn it NEAR parent with tiny random offset to prevent overlap-explosions
+                      return { 
+                        ...n, 
+                        x: node.x + (Math.random() - 0.5) * 4, 
+                        y: node.y + (Math.random() - 0.5) * 4 
+                      };
+                    });
+
+                  const nextLinks = fullGraphData.current.links.filter(l => {
+                    const sid = String(typeof l.source === 'object' ? l.source.id : l.source);
+                    const tid = String(typeof l.target === 'object' ? l.target.id : l.target);
+                    return visibleNodeIds.has(sid) && visibleNodeIds.has(tid);
+                  });
+
+                  setGraphData({ nodes: nextNodes, links: nextLinks });
+                  setHighlightedNodes(newHighlightNodes);
                 }}
-                onNodeDoubleClick={(node) => {
-                  console.log("Future Expansion Triggered for:", node.id);
-                  // Phase 2 will be implemented here
-                }}
+                onNodeDoubleClick={() => {}} // Double-click disabled for now as per request
+                expandedNodes={expandedNodes}
+                canExpandMap={Object.fromEntries(
+                    (fullGraphData.current?.nodes || [])
+                      .filter(n => !n.is_item)
+                      .map(n => [
+                        n.id, 
+                        fullGraphData.current.links.some(l => {
+                          const sid = String(typeof l.source === 'object' ? l.source.id : l.source);
+                          const tid = String(typeof l.target === 'object' ? l.target.id : l.target);
+                          if (sid !== n.id && tid !== n.id) return false;
+                          const otherId = sid === n.id ? tid : sid;
+                          const otherNode = fullGraphData.current.nodes.find(node => node.id === otherId);
+                          return otherNode && otherNode.is_item === true;
+                        })
+                      ])
+                )}
                 highlightedNodes={highlightedNodes}
                 highlightedLinks={highlightedLinks}
                 theme={theme}

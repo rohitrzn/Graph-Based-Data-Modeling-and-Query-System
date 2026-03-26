@@ -40,8 +40,11 @@ def get_graph_data(db: Session):
     core_tables = {
         "business_partners",
         "sales_order_headers",
+        "sales_order_items",
         "outbound_delivery_headers",
+        "outbound_delivery_items",
         "billing_document_headers",
+        "billing_document_items",
         "payments_accounts_receivable",
         "journal_entry_items_accounts_receivable",
         "products",
@@ -74,7 +77,12 @@ def get_graph_data(db: Session):
 
             kw = clean(row_dict)
             label_primary = str(kw.get(first_col, local_id))
-            add_node(global_id, f"{table_name}: {label_primary}", table_name, **kw)
+            table_name_str = str(table_name)
+            is_item = ("items" in table_name_str or table_name_str.endswith("_items") or "item" in table_name_str)
+            # Special case: Journal Entries are a core entity hub despite the table name
+            if table_name_str == "journal_entry_items_accounts_receivable":
+                is_item = False
+            add_node(global_id, f"{table_name_str}: {label_primary}", table_name_str, is_item=is_item, **kw)
 
     # 3. Explicit Document Flow Wiring (Prioritized)
     node_lookup = {n["id"]: n for n in nodes}
@@ -125,15 +133,53 @@ def get_graph_data(db: Session):
             if cust in bp_map:
                 add_edge(gid, bp_map[cust], "journalForCustomer", is_core=True)
 
-    # 3e. Product -> SO (via sales_order_items)
-    so_items = metadata.tables.get("sales_order_items")
-    if so_items is not None:
-        rows = db.execute(so_items.select()).fetchall()
+    # 3e. Header -> Item -> Product (Granular Wiring)
+    # Sales Order Items
+    s_items = metadata.tables.get("sales_order_items")
+    if s_items is not None:
+        rows = db.execute(s_items.select()).fetchall()
         for row in rows:
             rd = dict(row._mapping)
-            so_id, mat = str(rd.get("salesOrder")), str(rd.get("material"))
-            if so_id in so_map and mat in prod_map:
-                add_edge(so_map[so_id], prod_map[mat], "orderedProduct", is_core=True)
+            so_id, mat, item_idx = str(rd.get("salesOrder")), str(rd.get("material")), str(rd.get("salesOrderItem"))
+            item_gid = f"sales_order_items_{so_id}_{item_idx}"
+            add_node(item_gid, f"SO Item: {item_idx}", "sales_order_items", is_item=True, **rd)
+            if so_id in so_map:
+                add_edge(so_map[so_id], item_gid, "hasItem", is_core=True)
+            if mat in prod_map:
+                add_edge(item_gid, prod_map[mat], "isProduct", is_core=True)
+                if so_id in so_map: # Restore Phase 1 Shortcut Edge to prevent drifting
+                    add_edge(so_map[so_id], prod_map[mat], "orderedProduct", is_core=True)
+
+    # Delivery Items
+    d_items = metadata.tables.get("outbound_delivery_items")
+    if d_items is not None:
+        rows = db.execute(d_items.select()).fetchall()
+        for row in rows:
+            rd = dict(row._mapping)
+            d_id, so_id, mat, item_idx = str(rd.get("deliveryDocument")), str(rd.get("referenceSdDocument")), str(rd.get("material")), str(rd.get("deliveryDocumentItem"))
+            item_gid = f"outbound_delivery_items_{d_id}_{item_idx}"
+            add_node(item_gid, f"Dlv Item: {item_idx}", "outbound_delivery_items", is_item=True, **rd)
+            if d_id in dlv_map:
+                add_edge(dlv_map[d_id], item_gid, "hasItem", is_core=True)
+            if mat in prod_map:
+                add_edge(item_gid, prod_map[mat], "isProduct", is_core=True)
+                if d_id in dlv_map: # Restore Phase 1 Shortcut Edge
+                    add_edge(dlv_map[d_id], prod_map[mat], "deliveredProduct", is_core=True)
+
+    # Billing Items
+    b_items = metadata.tables.get("billing_document_items")
+    if b_items is not None:
+        rows = db.execute(b_items.select()).fetchall()
+        for row in rows:
+            rd = dict(row._mapping)
+            b_id, ref_id, item_idx = str(rd.get("billingDocument")), str(rd.get("referenceSdDocument")), str(rd.get("billingDocumentItem"))
+            item_gid = f"billing_document_items_{b_id}_{item_idx}"
+            add_node(item_gid, f"Bill Item: {item_idx}", "billing_document_items", is_item=True, **rd)
+            if b_id in bill_map:
+                add_edge(bill_map[b_id], item_gid, "hasItem", is_core=True)
+            # Link Bill Item to SO or Delivery if possible
+            if ref_id in so_map: add_edge(item_gid, so_map[ref_id], "referencesOrder", is_core=True)
+            if ref_id in dlv_map: add_edge(item_gid, dlv_map[ref_id], "referencesDlv", is_core=True)
 
     # 3f. Invoice -> Business Partner (Fallback for floating invoices)
     for head_local, head_gid in table_to_primary_key_cache.get("billing_document_headers", []):
@@ -144,6 +190,37 @@ def get_graph_data(db: Session):
                 add_edge(head_gid, bp_map[sold_to], "billedTo", is_core=True)
             elif payer in bp_map:
                 add_edge(head_gid, bp_map[payer], "paidBy", is_core=True)
+
+    # 3g. Items -> Headers (Structural Wiring)
+    # Sales Order Items -> SO Header
+    if (so_items := metadata.tables.get("sales_order_items")) is not None:
+        for row in db.execute(so_items.select()).fetchall():
+            rd = dict(row._mapping)
+            so_id, item_id = str(rd.get("salesOrder")), str(rd.get("salesOrderItem"))
+            item_gid = f"sales_order_items_{so_id}_{item_id}" # Composite key for uniqueness
+            if so_id in so_map:
+                add_node(item_gid, f"SO Item: {item_id}", "sales_order_items", is_item=True, **rd)
+                add_edge(item_gid, so_map[so_id], "itemOfOrder", is_core=True)
+
+    # Outbound Delivery Items -> Delivery Header
+    if (dlv_items := metadata.tables.get("outbound_delivery_items")) is not None:
+        for row in db.execute(dlv_items.select()).fetchall():
+            rd = dict(row._mapping)
+            d_id, item_id = str(rd.get("deliveryDocument")), str(rd.get("deliveryDocumentItem"))
+            item_gid = f"outbound_delivery_items_{d_id}_{item_id}"
+            if d_id in dlv_map:
+                add_node(item_gid, f"DLV Item: {item_id}", "outbound_delivery_items", is_item=True, **rd)
+                add_edge(item_gid, dlv_map[d_id], "itemOfDelivery", is_core=True)
+
+    # Billing Document Items -> Billing Header
+    if (bill_items := metadata.tables.get("billing_document_items")) is not None:
+        for row in db.execute(bill_items.select()).fetchall():
+            rd = dict(row._mapping)
+            b_id, item_id = str(rd.get("billingDocument")), str(rd.get("billingDocumentItem"))
+            item_gid = f"billing_document_items_{b_id}_{item_id}"
+            if b_id in bill_map:
+                add_node(item_gid, f"Bill Item: {item_id}", "billing_document_items", is_item=True, **rd)
+                add_edge(item_gid, bill_map[b_id], "itemOfBilling", is_core=True)
 
     # 4. Universal Fallback Crawler (Catching remaining links)
     for node in nodes:

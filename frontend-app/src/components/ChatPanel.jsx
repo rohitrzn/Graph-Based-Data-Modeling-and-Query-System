@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2 } from 'lucide-react';
+import { Send, Bot, User, Loader2, Download } from 'lucide-react';
 
 const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, theme = 'light' }) => {
   const [messages, setMessages] = useState([{ role: 'assistant', text: 'Hello! Ask me any questions about the data.' }]);
@@ -18,6 +18,25 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const handleExport = () => {
+    const text = messages.map(m => {
+        const role = m.role === 'user' ? 'USER' : 'ASSISTANT';
+        let content = `${role}:\n${m.text}`;
+        if (m.sql) content += `\nSQL: ${m.sql}`;
+        return content;
+    }).join('\n\n---\n\n');
+    
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sap-graph-chat-${new Date().toISOString().slice(0,10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -64,6 +83,13 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
                   if (clean.length > 0 && validNodeIds.has(clean)) {
                       targetSet.add(clean);
                   }
+                  
+                  // Regex for picking up (id) or [id] patterns from LLM text
+                  const match = clean.match(/[\(\[](.*?)[\)\]]/);
+                  if (match && validNodeIds.has(match[1])) {
+                      targetSet.add(match[1]);
+                  }
+
                   // Fallback: Check if prefix-added versions exist (since the LLM might just say "320000083")
                   if (validNodeIds.has(`business_partners_${clean}`)) targetSet.add(`business_partners_${clean}`);
                   if (validNodeIds.has(`sales_order_headers_${clean}`)) targetSet.add(`sales_order_headers_${clean}`);
@@ -76,7 +102,13 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
           }
           if (dataArray) {
               dataArray.forEach(row => {
-                  ['id', 'customer_id', 'company_id', 'accounting_document_id', 'sales_order', 'delivery', 'product'].forEach(key => {
+                  const keys = [
+                      'id', 'customer_id', 'company_id', 'accounting_document_id', 
+                      'sales_order', 'delivery', 'product', 'material',
+                      'businessPartner', 'business_partner', 'partner', 'supplier',
+                      'billingDocument', 'deliveryDocument', 'salesOrder', 'referenceSdDocument'
+                  ];
+                  keys.forEach(key => {
                       if (row[key]) {
                           const val = String(row[key]);
                           if (validNodeIds.has(val)) targetSet.add(val);
@@ -172,9 +204,18 @@ const ChatPanel = ({ nodeToChat, onHighlightNodes, onHighlightLinks, graphData, 
   return (
     <div className={`flex flex-col h-full w-full rounded-lg shadow-sm shrink-0 border transition-colors duration-300 ${isDark ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Header */}
-      <div className={`flex items-center gap-2 p-4 border-b rounded-t-lg transition-colors duration-300 ${isDark ? 'bg-[#1E293B] border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-        <Bot className={`w-5 h-5 ${isDark ? 'text-blue-500' : 'text-blue-600'}`} />
-        <h2 className={`font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>Query Assistant</h2>
+      <div className={`flex items-center justify-between p-4 border-b rounded-t-lg transition-colors duration-300 ${isDark ? 'bg-[#1E293B] border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+        <div className="flex items-center gap-2">
+          <Bot className={`w-5 h-5 ${isDark ? 'text-blue-500' : 'text-blue-600'}`} />
+          <h2 className={`font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>Query Assistant</h2>
+        </div>
+        <button 
+          onClick={handleExport}
+          className={`p-1.5 rounded-md hover:bg-slate-200/50 transition-colors ${isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800'}`}
+          title="Export Chat"
+        >
+          <Download className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Messages */}

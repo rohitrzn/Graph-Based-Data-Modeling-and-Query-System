@@ -15,30 +15,24 @@ api_key = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=api_key) if api_key else None
 
 SCHEMA_CONTEXT = """
-You are an AI assistant that translates natural language inquiries into SQL queries for an SQLite database.
-The data visualized in the Graph UI focuses on the Order-to-Cash (O2C) flow: Business Partners -> Sales Orders -> Outbound Deliveries -> Billing Documents (Invoices) -> Journal Entries / Payments, plus Products. Address queries keeping this visual context in mind.
+You are an AI assistant that translates natural language inquiries into SQL queries for an SQLite database focusing on the Order-to-Cash (O2C) flow.
 
 Rules:
-1. Do not hallucinate data. Only use what is provided in the schema.
-2. If the user's prompt is completely unrelated to business, datasets, or the schema, respond EXACTLY with:
+1. RESTRICTED DOMAIN: If the prompt is unrelated to the dataset (general knowledge, creative writing, etc.), respond EXACTLY with:
    "This system is designed to answer questions related to the provided dataset only."
-3. Your final response should ONLY output a single text string based on the current context.
-4. NO RANDOM LIMITS: Do NOT append arbitrary limit clauses (like LIMIT 5) unless the user specifically asks for "top 5" or "a few". Return all matching rows so the user gets the full visualized context.
-5. NO COMMA SEPARATED JOINS: Always use explicit JOIN syntax (e.g. `LEFT JOIN tableB ON tableA.id = tableB.id`) rather than implicit comma separation (`FROM tableA, tableB`).
-6. There is no universal 'id' column! You MUST look at the table schema to identify the primary key (e.g. `soldToParty`, `deliveryDocument`) and always include it in your SELECT statements. 
-7. CRITICAL SYNTAX RULE: You MUST strictly generate ONLY ONE contiguous SQL statement. NEVER output multiple statements separated by semicolons. If asked to count or query completely unrelated tables simultaneously, YOU MUST WRAP EACH SUBQUERY IN PARENTHESES AND PUT A SINGLE 'SELECT' AT THE VERY BEGINNING!
-   - CORRECT: `SELECT (SELECT COUNT(*) FROM tableA) as count_A, (SELECT COUNT(*) FROM tableB) as count_B`
-   - WRONG (WILL CRASH): `SELECT COUNT(*) FROM tableA, SELECT COUNT(*) FROM tableB`
-8. SCHEMA MAPPING: When querying for a specific product referenced in sales orders, the `sales_order_items` table connects using the `material` column. Never use `product` in `sales_order_items`. Example: `WHERE sales_order_items.material = 'S89...'` or `JOIN products ON products.product = sales_order_items.material`.
-9. PROCESS FLOW LOGIC: 
-   - A 'Broken Flow' or 'Incomplete Flow' means a Sales Order has a Delivery but NO Billing Document, or a Delivery exists for the SO but the Billing record is missing.
-   - Status Codes: In `sales_order_headers`: `overallDeliveryStatus` 'A' (Open/Not yet delivered), 'C' (Completely delivered). The status column `overallOrdReltdBillgStatus` is currently empty.
-   - Identifying Incomplete Flows: To correctly find these, you MUST use explicit JOINS between `sales_order_headers`, `outbound_delivery_items`, and `billing_document_items`. 
-   - Example (Delivered but not Billed): `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
-   - Use these joins over row-level status characters when specifically checking for flow consistency across documents.
+2. NO HALLUCINATION: Only use provided schema. No markdown ticks.
+3. SINGLE SQL: Output ONLY one contiguous SQL statement. 
+4. NO RANDOM LIMITS: Return all matching rows unless specified.
+5. EXPLICIT JOINS: Use `LEFT JOIN tableB ON ...` instead of comma separation.
+6. PRIMARY KEYS: Always include primary keys (e.g. `soldToParty`, `deliveryDocument`, `billingDocument`) in your SELECT.
+7. O2C QUERY LOGIC:
+   - MOST BILLED PRODUCTS: Use `billing_document_items` (column `material`) and count.
+   - FULL FLOW TRACING: Start with `sales_order_headers`, join `outbound_delivery_items` (on `referenceSdDocument`), then `billing_document_items` (on `referenceSdDocument`), then `journal_entry_items_accounts_receivable` (on `referenceDocument`).
+   - BROKEN/INCOMPLETE FLOWS (e.g., delivered but not billed):
+     `SELECT DISTINCT i.referenceSdDocument FROM outbound_delivery_items i LEFT JOIN billing_document_items b ON i.deliveryDocument = b.referenceSdDocument WHERE b.referenceSdDocument IS NULL`
+   - PRODUCT MAPPING: Use `sales_order_items.material` to join with `products.product`.
 
-Step 1: Convert query to SQL.
-When provided with a user question, return ONLY the raw SQL query string. No formatting ticks (```), no explanations.
+Step 1: Convert query to SQL. Return ONLY raw SQL.
 """
 
 def get_dynamic_schema(db: Session) -> str:
@@ -116,13 +110,11 @@ def execute_sql(db: Session, sql: str):
         return f"Error executing SQL: {e}"
 
 def generate_nl_response(question: str, sql: str, data: list, history: list = None):
-    # Truncate the results array so we do not overflow the LLM context limits
-    truncated_data = data[:5] if isinstance(data, list) else data
     
     messages = []
     messages.append({
         "role": "system", 
-        "content": "You are a helpful AI answering data questions naturally and accurately based on returned SQL data context. Do not output markdown code blocks unless requested. Be concise and helpful."
+        "content": "You are a helpful AI answering data questions naturally and accurately based on returned SQL data context. Do not output markdown code blocks unless requested. Be concise and helpful. IMPORTANT: When mentioning specific entities (like Sales Orders or Business Partners), please include their ID in parentheses if available, e.g., 'Business Partner X (bp_123)', so the UI can highlight them."
     })
     
     if history:
@@ -130,7 +122,7 @@ def generate_nl_response(question: str, sql: str, data: list, history: list = No
             role = "user" if msg.get("role") == "user" else "assistant"
             messages.append({"role": role, "content": msg.get("content", "").strip()})
             
-    content = f"Target SQL: {sql}\nDatabase returned: {truncated_data}\n\nSummarize the answer to the user's newest question based on this data."
+    content = f"Target SQL: {sql}\nDatabase returned: {data}\n\nSummarize the answer to the user's newest question based on this data."
     messages.append({"role": "user", "content": f"New User Question: {question}\n\n{content}"})
     
     try:
